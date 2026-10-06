@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Grok2API" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:colorPrimary">@color/purple_500</item>
+        <item name="android:colorOnPrimary">@color/white</item>
+        <item name="android:colorPrimaryContainer">@color/purple_700</item>
+        <item name="android:colorOnPrimaryContainer">@color/white</item>
+        <item name="android:colorSecondary">@color/teal_200</item>
+        <item name="android:colorOnSecondary">@color/black</item>
+    </style>
+</resources>
