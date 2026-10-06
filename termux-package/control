@@ -1,0 +1,18 @@
+package: grok2api
+name: grok2api
+version: 3.1.4
+revision: 1
+epoch: 1
+architecture: aarch64
+maintainer: grok2api Team @github
+description: A multi-account API gateway for Grok Build, Grok Web, and Grok Console
+depends: ca-certificates, openssl
+conflicts:
+replaces:
+provides:
+section: net
+priority: stable
+homepage: https://github.com/valitacrossdress-oss/grok2api
+license: MIT
+source: https://github.com/valitacrossdress-oss/grok2api
+build-date: $(date +%Y-%m-%d)

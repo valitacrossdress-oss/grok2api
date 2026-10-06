@@ -1,0 +1,224 @@
+name: Termux Package
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      upload-release:
+        description: 'Upload .deb to GitHub release'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: termux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-termux-package:
+    name: Build Termux .deb package
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            echo "version=$(cat VERSION)-$(date +%Y%m%d%H%M)" >> $GITHUB_OUTPUT
+          else
+            echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu
+
+      - name: Build Go binary for arm64
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: arm64
+        working-directory: backend
+        run: |
+          go mod download
+          go build -buildvcs=false -trimpath -ldflags="-s -w" \
+            -o /tmp/grok2api \
+            ./cmd/grok2api
+
+      - name: Create package directory structure
+        run: |
+          mkdir -p termux-deb/usr/bin
+          mkdir -p termux-deb/usr/share/grok2api
+          mkdir -p termux-deb/etc/grok2api
+          mkdir -p termux-deb/var/lib/grok2api
+          mkdir -p termux-deb/var/log/grok2api
+          mkdir -p termux-deb/DEBIAN
+
+      - name: Copy binary
+        run: |
+          cp /tmp/grok2api termux-deb/usr/bin/grok2api
+          chmod 755 termux-deb/usr/bin/grok2api
+
+      - name: Copy wrapper script
+        run: |
+          cp termux-package/grok2api.sh termux-deb/usr/bin/grok2api-server
+          chmod 755 termux-deb/usr/bin/grok2api-server
+
+      - name: Copy config example
+        run: |
+          cp config.example.yaml termux-deb/usr/share/grok2api/config.example.yaml
+          chmod 644 termux-deb/usr/share/grok2api/config.example.yaml
+
+      - name: Copy VERSION file
+        run: |
+          cp VERSION termux-deb/usr/share/grok2api/VERSION
+          chmod 644 termux-deb/usr/share/grok2api/VERSION
+
+      - name: Create DEBIAN control file
+        run: |
+          cat > termux-deb/DEBIAN/control << 'EOF'
+Package: grok2api
+Version: ${{ steps.version.outputs.version }}
+Section: net
+Priority: optional
+Architecture: arm64
+Maintainer: grok2api Team @github
+Description: A multi-account API gateway for Grok Build, Grok Web, and Grok Console
+ This package provides the grok2api server binary compiled for Termux on Android.
+ It manages independent Grok Build, Grok Web, and Grok Console account pools and
+ exposes unified OpenAI- and Anthropic-compatible APIs.
+Depends: ca-certificates, openssl
+Homepage: https://github.com/valitacrossdress-oss/grok2api
+License: MIT
+EOF
+
+      - name: Create postinst script
+        run: |
+          cat > termux-deb/DEBIAN/postinst << 'EOF'
+#!/bin/bash
+set -e
+
+echo "Installing grok2api..."
+
+# Create directories
+mkdir -p "$PREFIX/etc/grok2api"
+mkdir -p "$PREFIX/var/lib/grok2api"
+mkdir -p "$PREFIX/var/log/grok2api"
+mkdir -p "$PREFIX/var/run"
+
+# Copy default config if not exists
+if [ ! -f "$PREFIX/etc/grok2api/config.yaml" ]; then
+    cp "$PREFIX/share/grok2api/config.example.yaml" "$PREFIX/etc/grok2api/config.yaml"
+    echo "Created default config at $PREFIX/etc/grok2api/config.yaml"
+fi
+
+# Set permissions
+chmod -R 755 "$PREFIX/etc/grok2api" 2>/dev/null || true
+chmod -R 755 "$PREFIX/var/lib/grok2api" 2>/dev/null || true
+chmod -R 755 "$PREFIX/var/log/grok2api" 2>/dev/null || true
+
+echo "grok2api installed successfully!"
+echo ""
+echo "To start the server:"
+echo "  1. Edit your configuration: nano $PREFIX/etc/grok2api/config.yaml"
+echo "  2. Generate secrets (if needed): grok2api-server secrets"
+echo "  3. Start the server: grok2api-server start"
+echo ""
+echo "Access the admin console at: http://localhost:8000"
+EOF
+          chmod 755 termux-deb/DEBIAN/postinst
+
+      - name: Create prerm script
+        run: |
+          cat > termux-deb/DEBIAN/prerm << 'EOF'
+#!/bin/bash
+set -e
+
+echo "Removing grok2api..."
+
+# Stop the server if running
+if [ -f "$PREFIX/var/run/grok2api.pid" ]; then
+    local pid=$(cat "$PREFIX/var/run/grok2api.pid")
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+        sleep 2
+        kill -9 "$pid" 2>/dev/null
+    fi
+    rm -f "$PREFIX/var/run/grok2api.pid"
+fi
+
+echo "grok2api stopped."
+EOF
+          chmod 755 termux-deb/DEBIAN/prerm
+
+      - name: Build .deb package
+        run: |
+          dpkg-deb --build --root-owner-group termux-deb termux-package_${{ steps.version.outputs.version }}_arm64.deb
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: grok2api-termux-deb
+          path: termux-package_*.deb
+          retention-days: 30
+
+      - name: Upload to GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: termux-package_*.deb
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            Termux .deb package for grok2api ${{ steps.version.outputs.version }}
+            
+            **Installation:**
+            ```bash
+            dpkg -i grok2api_*.deb
+            ```
+            
+            **Usage:**
+            ```bash
+            grok2api-server init    # Initialize config
+            grok2api-server start  # Start server
+            grok2api-server status # Check status
+            ```
+
+      - name: Upload to GitHub Release (manual trigger)
+        if: github.event_name == 'workflow_dispatch' && inputs.upload-release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: termux-package_*.deb
+          tag_name: nightly
+          name: Nightly Build
+          prerelease: true
+          body: |
+            Nightly Termux .deb package for grok2api
+            
+            Built from: ${{ github.sha }}
+            
+            **Installation:**
+            ```bash
+            dpkg -i grok2api_*.deb
+            ```
